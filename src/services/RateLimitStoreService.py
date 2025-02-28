@@ -1,8 +1,15 @@
-import threading
 import time
-from abc import ABC, abstractmethod
-from enum import Enum
 from threading import Lock
+
+import redis
+
+
+class RateLimitConfigValue:
+
+    def __init__(self):
+        self.start_time = time.time()
+        self.current_count = 0
+
 
 
 class SingletonMeta(type):
@@ -16,133 +23,56 @@ class SingletonMeta(type):
         return cls._instances[cls]
 
 
-
 class UserLimitState:
     def __init__(self):
         self.count = 0
         self.start_time = time.time()
 
 
-class GranularityFactory():
-    @staticmethod
-    def get_granularity_config(granularity, time_unit, allowed_count):
-        if granularity == GranularityLevel.HOURLY:
-            return HourWiseGranularity(time_unit, allowed_count)
-        elif granularity == GranularityLevel.MINUTELY:
-            return MinuteWiseGranularityConfig(time_unit, allowed_count)
-        elif granularity == GranularityLevel.DAILY:
-            return DayWiseGranularity(time_unit, allowed_count)
-        else:
-            raise Exception("Granularity not found, please configure properly")
+
+from abc import ABC, abstractmethod
 
 
-class BaseGranularity(ABC):
-    time_unit: int
-    allowed_count: int
-
-    def __init__(self, time_unit, allowed_count):
-        self.time_unit = time_unit
-        self.allowed_count = allowed_count
-
+class RateLimitStoreService(ABC):
 
     @abstractmethod
-    def validate_rate_limit(self, api_path, user_attribute):
+    def increment_key(self, key, ttl):
         pass
 
 
-class RateLimitConfigValue:
-
-    def __init__(self):
-        self.start_time = time.time()
-        self.current_count = 0
-
-
-class GranularityLevel(Enum):
-    MINUTELY = "minutely"
-    DAILY = "daily"
-    HOURLY = "hourly"
-
-
-class RateLimitResponse:
-    def __init__(self, is_rate_limited, remaining, limit, reset_after):
-        self.is_rate_limited = is_rate_limited
-        self.remaining = remaining
-        self.limit = limit
-        self.reset_after = reset_after
-
-class MinuteWiseGranularityConfig(BaseGranularity):
-
-    @staticmethod
-    def get_key(api_path, user_attribute):
-        return '_'.join([api_path, user_attribute, GranularityLevel.MINUTELY.value])
-
-
-    def validate_rate_limit(self, api_path, user_attribute):
-        """
-            Implement rate limit on the basis of minute
-        :return:
-        """
-        key = self.get_key(api_path, user_attribute)
-        rate_limit_store_service = RateLimitStoreService()
-        with rate_limit_store_service.fetch_lock(key):
-            current_rate_limit_value: RateLimitConfigValue = rate_limit_store_service.get_key(key)
-            current_time_diff = time.time() - current_rate_limit_value.start_time
-            reset_after = current_rate_limit_value.start_time + self.time_unit*60
-            if current_time_diff > self.time_unit*60:
-                current_rate_limit_value.start_time = time.time()
-                current_rate_limit_value.current_count = 0
-            else:
-                if current_rate_limit_value.current_count + 1 > self.allowed_count:
-                    print(" Id with ", threading.get_ident(), " Rate limited")
-                    return RateLimitResponse(
-                        True, 0, self.allowed_count, reset_after)
-            current_rate_limit_value.current_count += 1
-            remaining = self.allowed_count - current_rate_limit_value.current_count
-            rate_limit_store_service.update_key(key, current_rate_limit_value)
-            return RateLimitResponse(False, remaining, self.allowed_count, reset_after)
-
-
-class DayWiseGranularity(BaseGranularity):
-
-    __GRANULARITY_LEVEL__ = "daywise"
-
-    def validate_rate_limit(self, api_path, user_attribute):
-        """
-            Implement rate limit on the basis of day
-        :return:
-        """
-
-
-
-class HourWiseGranularity(BaseGranularity):
-
-    __GRANULARITY_LEVEL__ = "hourwise"
-
-    def validate_rate_limit(self, api_path, user_attribute):
-        """
-            Implement rate limit on the basis of hour
-        :return:
-        """
-        pass
-
-
-class RateLimitStoreService(metaclass=SingletonMeta):
+class InMemoryRateLimitStore(RateLimitStoreService, metaclass=SingletonMeta):
     rate_limit_store: dict[str, UserLimitState] = {}
     rate_limit_config: dict[str, dict[str, str]] = {}
     lock_dict: dict[str, Lock] = {}
 
     @classmethod
-    def get_key(cls, key):
-        return cls.rate_limit_store.get(key, RateLimitConfigValue())
-
-    @classmethod
-    def update_key(cls, key, config):
-        cls.rate_limit_store[key] = config
-
-    @classmethod
     def fetch_lock(cls, key):
         return cls.lock_dict.setdefault(key, Lock())
 
-# We will support three granulaity layers
-# per minute, per hour, per day
-# We can save the minute, hour, day as suffix
+    @classmethod
+    def increment_key(cls, key, expire_after):
+        with cls.fetch_lock(key):
+            current_user_limits = cls.rate_limit_store.setdefault(key, UserLimitState())
+            if current_user_limits.start_time + expire_after < time.time():
+                current_user_limits.count = 0
+                current_user_limits.start_time = time.time()
+            current_user_limits.count += 1
+            return current_user_limits.count, current_user_limits.start_time + expire_after
+
+
+class RedisRateLimitStore(RateLimitStoreService):
+    redis_client = redis.Redis()
+
+    @classmethod
+    def increment_key(cls, key, ttl):
+        if not cls.redis_client.exists(key):
+            cls.redis_client.setex(key, ttl, 0)
+        current_count = cls.redis_client.incr(key)
+        remaining_ttl = cls.redis_client.ttl(key)
+        if remaining_ttl == -1:
+            cls.redis_client.expire(key, ttl)
+            remaining_ttl = ttl
+        return current_count, remaining_ttl
+
+
+
