@@ -65,9 +65,10 @@ class MinuteWiseGranularityConfig(BaseGranularity):
             Implement rate limit on the basis of minute
         :return:
         """
+        # TODO: check for time unit and how we are comparing
+        # we might be using different values for different operations
         key = self.get_key(api_path, user_attribute)
-        rate_limit_store_service = self.rate_limit_store
-        current_count, reset_after = rate_limit_store_service.increment_key(key, self.time_unit*60)
+        current_count, reset_after = self.rate_limit_store.increment_key(key, self.time_unit*60)
         if current_count > self.allowed_count:
             return RateLimitResponse(True, 0, self.allowed_count, reset_after)
         return RateLimitResponse(False, self.allowed_count - current_count, self.allowed_count,

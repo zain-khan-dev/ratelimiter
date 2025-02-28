@@ -40,7 +40,8 @@ class RateLimitStoreService(ABC):
         pass
 
 
-class InMemoryRateLimitStore(RateLimitStoreService, metaclass=SingletonMeta):
+class InMemoryRateLimitStore(RateLimitStoreService):
+    __metaclass__ = SingletonMeta
     rate_limit_store: dict[str, UserLimitState] = {}
     rate_limit_config: dict[str, dict[str, str]] = {}
     lock_dict: dict[str, Lock] = {}
