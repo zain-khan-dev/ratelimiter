@@ -1,6 +1,5 @@
 from functools import wraps
-
-from starlette.responses import Response
+from http import HTTPStatus
 
 from src.services.RateLimitStoreService import GranularityFactory
 
@@ -8,15 +7,15 @@ from src.services.RateLimitStoreService import GranularityFactory
 def rate_limit(granularity, time_unit, allowed_count):
     def inner_dec(func):
         @wraps(func)
-        async def inner(*args, request, **kwargs):
-            print(request["path"])
+        async def inner(*args, request, response, **kwargs):
             granularity_config = GranularityFactory.get_granularity_config(granularity, time_unit, allowed_count)
-            granularity_config.validate_rate_limit(request["path"], request.client.host)
-            response: Response = await func(*args, request, **kwargs)
-            response.headers["X-RateLimit-Remaining"] = 1
-            response.headers["X-RateLimit-Limit"] = 100
-            response.headers["X-RateLimit-Reset"] = 20
-            response.headers["Retry-After"] = 100
-            return response
+            rate_limit_response = granularity_config.validate_rate_limit(request["path"], request.client.host)
+            response.headers["X-RateLimit-Remaining"] = str(rate_limit_response.remaining)
+            response.headers["X-RateLimit-Limit"] = str(rate_limit_response.limit)
+            response.headers["X-RateLimit-Reset"] = str(rate_limit_response.reset_after)
+            response.headers["Retry-After"] = str(rate_limit_response.reset_after)
+            if rate_limit_response.is_rate_limited:
+                response.status_code = HTTPStatus.TOO_MANY_REQUESTS
+            return await func(*args, request, response, **kwargs)
         return inner
     return inner_dec

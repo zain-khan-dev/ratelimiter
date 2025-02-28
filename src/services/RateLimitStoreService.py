@@ -62,6 +62,14 @@ class GranularityLevel(Enum):
     DAILY = "daily"
     HOURLY = "hourly"
 
+
+class RateLimitResponse:
+    def __init__(self, is_rate_limited, remaining, limit, reset_after):
+        self.is_rate_limited = is_rate_limited
+        self.remaining = remaining
+        self.limit = limit
+        self.reset_after = reset_after
+
 class MinuteWiseGranularityConfig(BaseGranularity):
 
     @staticmethod
@@ -79,17 +87,19 @@ class MinuteWiseGranularityConfig(BaseGranularity):
         with rate_limit_store_service.fetch_lock(key):
             current_rate_limit_value: RateLimitConfigValue = rate_limit_store_service.get_key(key)
             current_time_diff = time.time() - current_rate_limit_value.start_time
+            reset_after = current_rate_limit_value.start_time + self.time_unit*60
             if current_time_diff > self.time_unit*60:
                 current_rate_limit_value.start_time = time.time()
                 current_rate_limit_value.current_count = 0
             else:
                 if current_rate_limit_value.current_count + 1 > self.allowed_count:
                     print(" Id with ", threading.get_ident(), " Rate limited")
-                    return False
+                    return RateLimitResponse(
+                        True, 0, self.allowed_count, reset_after)
             current_rate_limit_value.current_count += 1
-            print(" Id with ", threading.get_ident(), " passed through")
+            remaining = self.allowed_count - current_rate_limit_value.current_count
             rate_limit_store_service.update_key(key, current_rate_limit_value)
-        return True
+            return RateLimitResponse(False, remaining, self.allowed_count, reset_after)
 
 
 class DayWiseGranularity(BaseGranularity):
