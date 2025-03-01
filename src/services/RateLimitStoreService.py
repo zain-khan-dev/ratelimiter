@@ -1,6 +1,8 @@
+import queue
 import time
 from threading import Lock
 
+from collections import deque
 import redis
 
 
@@ -45,6 +47,12 @@ class InMemoryRateLimitStore(RateLimitStoreService):
     rate_limit_store: dict[str, UserLimitState] = {}
     rate_limit_config: dict[str, dict[str, str]] = {}
     lock_dict: dict[str, Lock] = {}
+    queue_hash: dict[str, deque] = {}
+    queue_lock_dict = dict[str, Lock] = {}
+
+    @classmethod
+    def fetch_queue_lock(cls, key):
+        return cls.queue_lock_dict.setdefault(key, Lock())
 
     @classmethod
     def fetch_lock(cls, key):
@@ -59,6 +67,21 @@ class InMemoryRateLimitStore(RateLimitStoreService):
                 current_user_limits.start_time = time.time()
             current_user_limits.count += 1
             return current_user_limits.count, current_user_limits.start_time + expire_after
+
+
+
+    @classmethod
+    def append_request_log(cls, key, time_unit, allowed_limit) -> [bool, int, int]:
+        with cls.fetch_queue_lock(key):
+            current_time = time.time()
+            client_queue = cls.queue_hash.setdefault(key, deque())
+            while client_queue and client_queue[0]  + time_unit < current_time:
+                client_queue.popleft()
+            reset_after = (client_queue[0] + time_unit) - current_time
+            if len(client_queue) >= allowed_limit:
+                return False, len(client_queue), reset_after
+            client_queue.append(current_time)
+        return True, len(client_queue), reset_after
 
 
 class RedisRateLimitStore(RateLimitStoreService):
