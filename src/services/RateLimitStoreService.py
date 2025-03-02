@@ -120,6 +120,25 @@ class InMemoryRateLimitStore(RateLimitStoreService):
             return True, 0, 0
 
 
+    @classmethod
+    def refill_and_decr_token(cls, key, refill_rate, allowed_tokens):
+        """
+            Get the tokens that were filled last refill time
+            refill them again based on the refill rate, current time and last_refill_time
+            decrement them by one and return not rate limited if they haven't reached 0
+            otherwise just send rate_limited
+        """
+        with cls.fetch_lock(key):
+            current_time = int(time.time())
+            previous_tokens, last_refill_time = cls.token_hash.setdefault(key, (allowed_tokens, current_time))
+            current_token = (min(allowed_tokens, previous_tokens + (current_time - last_refill_time) * refill_rate))
+            if current_token > 0:
+                current_token -= 1
+            else:
+                return True, last_refill_time + 1/refill_rate
+            cls.token_hash[key] = (current_token, current_time)
+            return False, 0
+
 
 class RedisRateLimitStore(RateLimitStoreService):
     redis_client = redis.Redis()
@@ -149,7 +168,27 @@ class RedisRateLimitStore(RateLimitStoreService):
                 end
                 return {is_rate_limited, remaining_count, oldest_request_time}
             """
+
+    refill_and_decr_lua_script = """
+            local key = KEYS[1]
+            local refill_rate = tonumber(ARGV[1])
+            local current_time = tonumber(ARGV[2])
+            local allowed_tokens = tonumber(ARGV[3])
+            local last_tokens = tonumber(redis.call("HGET", key, "tokens")) or allowed_tokens   
+            local last_refill_time = tonumber(redis.call("HGET", key, "last_refill_time")) or current_time
+            local seconds_elapsed = current_time - last_refill_time
+            local current_tokens = math.min(allowed_tokens, last_tokens + math.floor(refill_rate * seconds_elapsed))
+            local is_rate_limited = 1
+            if current_tokens > 0 then 
+            redis.call("HSET", key, "tokens", current_tokens - 1)
+            redis.call("HSET", key, "last_refill_time", current_time)
+            is_rate_limited = 0
+            end
+            return {is_rate_limited, current_tokens}
+        """
+
     add_to_set = redis_client.register_script(add_to_sorted_set_lua_script)
+    refill_and_decr = redis_client.register_script(refill_and_decr_lua_script)
 
     @classmethod
     def user_based_increment_key(cls, key, ttl):
@@ -178,3 +217,16 @@ class RedisRateLimitStore(RateLimitStoreService):
     @classmethod
     def get_counter(cls, key):
         return cls.redis_client.get(key) or 0
+
+
+    @classmethod
+    def refill_and_decr_token(cls, key, refill_rate, allowed_token):
+        """
+            Uses lua script to atomically update the bucket according to the tokens that need to be added
+            Caps them to allowed_token
+            if the total token > 0 then decrement 1 and rate_limited as False
+            otherwise set rate_limited to true
+        """
+        keys = [key]
+        args = [refill_rate, int(time.time()), allowed_token]
+        return cls.refill_and_decr(keys=keys, args=args)
