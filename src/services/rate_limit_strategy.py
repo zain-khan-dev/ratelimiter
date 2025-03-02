@@ -51,6 +51,7 @@ class SlidingWindowLogRateLimitStrategy(RateLimitStrategy):
 class SlidingWindowCounterRateLimitStrategy(RateLimitStrategy):
     def validate_rate_limit(self, api_path, user_attribute) -> RateLimitResponse:
         pass
+    #
 
 
 class TokenBucketRateLimitStrategy:

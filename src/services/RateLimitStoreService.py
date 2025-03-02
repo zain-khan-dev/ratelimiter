@@ -1,5 +1,6 @@
 import queue
 import time
+import uuid
 from threading import Lock
 
 from collections import deque
@@ -86,17 +87,51 @@ class InMemoryRateLimitStore(RateLimitStoreService):
 
 class RedisRateLimitStore(RateLimitStoreService):
     redis_client = redis.Redis()
+    add_to_sorted_set_lua_script = """
+                local key = KEYS[1]
+                local current_time = tonumber(ARGV[1])
+                local time_unit = tonumber(ARGV[2])
+                local allowed_count = tonumber(ARGV[3])
+                local unique_member = ARGV[4]
+                local lower_range = current_time - time_unit
+                redis.call("ZREMRANGEBYSCORE", key, "-inf", lower_range - 1)
+                local count = redis.call("ZCOUNT", key, lower_range, current_time)
+                local is_rate_limited = 0
+                local remaining_count = math.max(allowed_count - count, 0)
+                local oldest_request_time = current_time
+                local oldest_request = redis.call("ZRANGE", key, 0, 0, "WITHSCORES")
+                if #oldest_request > 0 then
+                    oldest_request_time = tonumber(oldest_request[2])
+                end
+
+                if remaining_count > 0
+                then
+                    redis.call("ZADD", key, current_time, unique_member)
+                    redis.call("EXPIRE", key, time_unit)
+                else
+                    is_rate_limited = 1
+                end
+                return {is_rate_limited, remaining_count, oldest_request_time}
+            """
+    add_to_set = redis_client.register_script(add_to_sorted_set_lua_script)
 
     @classmethod
     def increment_key(cls, key, ttl):
-        if not cls.redis_client.exists(key):
-            cls.redis_client.setex(key, ttl, 0)
+        if cls.redis_client.setnx(key, 0):
+            cls.redis_client.expire(key, ttl)
         current_count = cls.redis_client.incr(key)
         remaining_ttl = cls.redis_client.ttl(key)
-        if remaining_ttl == -1:
-            cls.redis_client.expire(key, ttl)
-            remaining_ttl = ttl
         return current_count, remaining_ttl
 
+
+    @classmethod
+    def add_request_log(cls, key, ttl, allowed_count, use_registered_script=True):
+        keys = [key]
+        args = [int(time.time()), ttl, allowed_count, str(uuid.uuid4())]
+        if use_registered_script:
+            result_tuple = cls.add_to_set(keys, args)
+        else:
+            result_tuple = cls.redis_client.eval(cls.add_to_sorted_set_lua_script,len(keys), *keys, *args)
+        return result_tuple
 
 
