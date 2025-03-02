@@ -1,7 +1,7 @@
 from src.services.granularity import GranularityFactory, RateLimitResponse
 
 from abc import ABC, abstractmethod
-
+import time
 
 class RateLimitStrategy(ABC):
     def __init__(self, granularity_level, time_unit, allowed_count, rate_limit_store):
@@ -50,7 +50,7 @@ class SlidingWindowLogRateLimitStrategy(RateLimitStrategy):
 
 class SlidingWindowCounterRateLimitStrategy(RateLimitStrategy):
     def validate_rate_limit(self, api_path, user_attribute) -> RateLimitResponse:
-        import time
+
         current_time = int(time.time())
         previous_window = self.granularity.get_window_start(current_time)
         current_window = self.granularity.get_window_end(current_time)

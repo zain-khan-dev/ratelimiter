@@ -50,7 +50,7 @@ class InMemoryRateLimitStore(RateLimitStoreService):
     lock_dict: dict[str, Lock] = {}
     queue_hash: dict[str, deque] = {}
     queue_lock_dict = dict[str, Lock] = {}
-    counter_rate_limit_store  = {}
+    counter_rate_limit_store: dict[str, int]  = {}
 
     @classmethod
     def fetch_queue_lock(cls, key):
@@ -76,6 +76,12 @@ class InMemoryRateLimitStore(RateLimitStoreService):
             cls.counter_rate_limit_store.setdefault(key, 0)
             cls.counter_rate_limit_store[key] += 1
             return cls.counter_rate_limit_store[key]
+
+
+    @classmethod
+    def get_counter(cls, key):
+        with cls.fetch_lock(key):
+            return cls.counter_rate_limit_store.get(key, 0)
 
 
     @classmethod
@@ -142,3 +148,10 @@ class RedisRateLimitStore(RateLimitStoreService):
         return result_tuple
 
 
+    @classmethod
+    def increment_counter_key(cls, key):
+        return cls.redis_client.incr(key)
+
+    @classmethod
+    def get_counter(cls, key):
+        return cls.redis_client.get(key) or 0
