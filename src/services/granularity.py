@@ -55,9 +55,24 @@ class RateLimitResponse:
 
 class MinuteWiseGranularityConfig(BaseGranularity):
 
+    @classmethod
+    def get_window_start(cls, current_time):
+        """
+            Current time given in seconds
+            Fixed time window
+            if time falls between 10:26:33 the start window will be 10:26:00 end window would be 10:27:00
+            find the start time for that minute given 10 seconds window
+        """
+        return (current_time//60) * 60
+
+    @classmethod
+    def get_window_end(cls, current_time):
+        return (current_time//60 + 1) * 60 # one minute greater
+
+
     @staticmethod
-    def get_key(api_path, user_attribute):
-        return '_'.join([api_path, user_attribute, GranularityLevel.MINUTELY.value])
+    def get_key(api_path, user_attribute, *args):
+        return '_'.join([api_path, user_attribute, *args, GranularityLevel.MINUTELY.value])
 
 
     def validate_rate_limit(self, api_path, user_attribute):
@@ -68,7 +83,7 @@ class MinuteWiseGranularityConfig(BaseGranularity):
         # TODO: check for time unit and how we are comparing
         # we might be using different values for different operations
         key = self.get_key(api_path, user_attribute)
-        current_count, reset_after = self.rate_limit_store.increment_key(key, self.time_unit*60)
+        current_count, reset_after = self.rate_limit_store.user_based_increment_key(key, self.time_unit * 60)
         if current_count > self.allowed_count:
             return RateLimitResponse(True, 0, self.allowed_count, reset_after)
         return RateLimitResponse(False, self.allowed_count - current_count, self.allowed_count,

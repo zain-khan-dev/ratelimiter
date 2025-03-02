@@ -39,17 +39,18 @@ from abc import ABC, abstractmethod
 class RateLimitStoreService(ABC):
 
     @abstractmethod
-    def increment_key(self, key, ttl):
+    def user_based_increment_key(self, key, ttl):
         pass
 
 
 class InMemoryRateLimitStore(RateLimitStoreService):
     __metaclass__ = SingletonMeta
-    rate_limit_store: dict[str, UserLimitState] = {}
+    user_rate_limit_store: dict[str, UserLimitState] = {}
     rate_limit_config: dict[str, dict[str, str]] = {}
     lock_dict: dict[str, Lock] = {}
     queue_hash: dict[str, deque] = {}
     queue_lock_dict = dict[str, Lock] = {}
+    counter_rate_limit_store  = {}
 
     @classmethod
     def fetch_queue_lock(cls, key):
@@ -60,15 +61,21 @@ class InMemoryRateLimitStore(RateLimitStoreService):
         return cls.lock_dict.setdefault(key, Lock())
 
     @classmethod
-    def increment_key(cls, key, expire_after):
+    def user_based_increment_key(cls, key, expire_after):
         with cls.fetch_lock(key):
-            current_user_limits = cls.rate_limit_store.setdefault(key, UserLimitState())
+            current_user_limits = cls.user_rate_limit_store.setdefault(key, UserLimitState())
             if current_user_limits.start_time + expire_after < time.time():
                 current_user_limits.count = 0
                 current_user_limits.start_time = time.time()
             current_user_limits.count += 1
             return current_user_limits.count, current_user_limits.start_time + expire_after
 
+    @classmethod
+    def increment_counter_key(cls, key):
+        with cls.fetch_lock(key):
+            cls.counter_rate_limit_store.setdefault(key, 0)
+            cls.counter_rate_limit_store[key] += 1
+            return cls.counter_rate_limit_store[key]
 
 
     @classmethod
@@ -116,7 +123,7 @@ class RedisRateLimitStore(RateLimitStoreService):
     add_to_set = redis_client.register_script(add_to_sorted_set_lua_script)
 
     @classmethod
-    def increment_key(cls, key, ttl):
+    def user_based_increment_key(cls, key, ttl):
         if cls.redis_client.setnx(key, 0):
             cls.redis_client.expire(key, ttl)
         current_count = cls.redis_client.incr(key)
