@@ -1,11 +1,13 @@
 import queue
 import time
 import uuid
+from math import floor
 from threading import Lock
 
 from collections import deque
 import redis
-
+from anyio import current_time
+import math
 
 class RateLimitConfigValue:
 
@@ -51,6 +53,8 @@ class InMemoryRateLimitStore(RateLimitStoreService):
     queue_hash: dict[str, deque] = {}
     queue_lock_dict = dict[str, Lock] = {}
     counter_rate_limit_store: dict[str, int]  = {}
+    token_hash: dict = {}
+
 
     @classmethod
     def fetch_queue_lock(cls, key):
@@ -96,6 +100,25 @@ class InMemoryRateLimitStore(RateLimitStoreService):
                 return False, len(client_queue), reset_after
             client_queue.append(current_time)
         return True, len(client_queue), reset_after
+
+
+    @classmethod
+    def refill_tokens(cls, key, refill_rate, allowed_tokens):
+        with cls.fetch_lock(key):
+            current_time = int(time.time())
+            current_tokens, last_refill_time = cls.token_hash.setdefault(key, (allowed_tokens, current_time))
+            cls.token_hash[key] = (min(allowed_tokens, current_tokens +
+                                       (current_time - last_refill_time) * refill_rate), current_time)
+
+    @classmethod
+    def decr_token(cls, key):
+        with cls.fetch_lock(key):
+            current_token, last_refill_time = cls.token_hash[key]
+            if current_token > 0:
+                cls.token_hash[key] = (current_token - 1, last_refill_time)
+                return False, current_token - 1, 0
+            return True, 0, 0
+
 
 
 class RedisRateLimitStore(RateLimitStoreService):

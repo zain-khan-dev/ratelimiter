@@ -65,8 +65,20 @@ class SlidingWindowCounterRateLimitStrategy(RateLimitStrategy):
         return RateLimitResponse(False, self.allowed_count - corrected_count, self.allowed_count, reset_after)
 
 
-class TokenBucketRateLimitStrategy:
-    pass
+class TokenBucketRateLimitStrategy(RateLimitStrategy):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # for minute
+        self.refill_rate = self.allowed_count/60
+
+    def validate_rate_limit(self, api_path, user_attribute):
+        key = self.granularity.get_key(api_path, user_attribute)
+        self.rate_limit_store.refill_tokens(key, self.refill_rate, self.allowed_count)
+        is_rate_limited, count_left, reset_after = self.rate_limit_store.decr_token(key)
+        if is_rate_limited:
+            return RateLimitResponse(True, 0, self.allowed_count, reset_after)
+        return RateLimitResponse(False, count_left, self.allowed_count, reset_after)
 
 
 class LeakyBucketRateLimitStrategy:
